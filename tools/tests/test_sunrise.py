@@ -358,6 +358,36 @@ class PlatformOnlyInjectionTests(unittest.TestCase):
                 sunrise.derive_mouse_helpers(Path(tmp), {"x": dict(helper="m.rs", helper_from="h.rs")})
 
 
+class RanFlowHelperTests(unittest.TestCase):
+    def test_a_command_helper_cancels_its_target_when_it_ran_the_line(self):
+        source = (
+            "// note\nfn handler(game: &mut crate::game::Game<'_>, command: &str, ran: &mut bool) {\n"
+            "    if command == \"x\" {\n        *ran = true;\n        return;\n    }\n}\n")
+        text = sunrise.ran_flow_helper(source)
+        self.assertIn("fn handler(game: &mut crate::game::Game<'_>, command: &str) -> core::ops::ControlFlow<Option<", text)
+        self.assertIn("let ran = &mut handled;", text)
+        self.assertIn("return;", text)
+        self.assertIn("ClientCommandOutcome::Success(1)", text)
+        self.assertTrue(text.startswith("// note\n"))
+
+    def test_a_helper_without_the_ran_signature_cannot_be_derived(self):
+        self.assertIsNone(sunrise.ran_flow_helper("fn other(game: &mut Game) {}\n"))
+
+
+class AfterCallHelperTests(unittest.TestCase):
+    def test_a_hud_helper_runs_after_the_call_it_hooks(self):
+        source = (
+            "fn hud(\n    game: &mut crate::game::Game<'_>,\n    batch: &mut sunrise_client::hud::HudBatch,\n"
+            "    corners: &mut sunrise_client::extras_hud::Corners,\n) {\n    draw(game, batch, corners);\n}\n")
+        text = sunrise.after_call_helper(source, "draw_pvp_hud")
+        self.assertIn("fn hud(game: &mut crate::game::Game<'_>, batch: &mut sunrise_client::hud::HudBatch, corners: &mut sunrise_client::extras_hud::Corners) -> core::ops::ControlFlow<()>", text)
+        self.assertLess(text.index("game.draw_pvp_hud(batch, corners);"), text.index("draw(game, batch, corners);"))
+        self.assertIn("ControlFlow::Break(())", text)
+
+    def test_a_helper_without_the_hud_signature_cannot_be_derived(self):
+        self.assertIsNone(sunrise.after_call_helper("fn other(game: &mut Game) {}\n", "x"))
+
+
 def usage_accepts(usage, line):
     """Whether Sunrise's client chat tree takes `line` for `usage` (the rules of native_server::usage_nodes)."""
     name, *arguments = usage.split()

@@ -256,7 +256,7 @@ def platform_only_injections(rules, shared_ids):
             raise SystemExit(f"platform injection {key}: not in the shared manifest, so it needs {' and '.join(missing)}")
         entry = dict(id=key, kind=rule.get("kind", "HEAD"))
         for name, value in rule.items():
-            if name not in ("drop", "reason", "kind", "params", "helper_from"):
+            if name not in ("drop", "reason", "kind", "params", "helper_from", "ran_flow", "after_call"):
                 entry[name] = value
         rows.append(entry)
     return rows
@@ -288,17 +288,88 @@ KEY_HELPER_SIGNATURE = re.compile(
     r"fn (\w+)\(\s*game: &mut crate::game::Game<'_>,\s*key: &str,\s*action: mod_api::KeyAction,\s*\) \{")
 
 
+RAN_HELPER_SIGNATURE = re.compile(
+    r"fn (\w+)\(\s*game: &mut crate::game::Game<'_>,\s*command: &str,\s*ran: &mut bool,?\s*\) \{")
+RAN_FLOW_RETURN = "core::ops::ControlFlow<Option<ClientCommandOutcome>>"
+
+
+def ran_flow_helper(source):
+    """A shared `(game, command, ran)` command helper as one that cancels its target when it ran the
+    line: the target answers with a successful client command, where Horizon's set `ran`."""
+    match = RAN_HELPER_SIGNATURE.search(source)
+    body = source.rstrip()
+    if match is None or not body.endswith("}"):
+        return None
+    return (
+        f"{source[:match.start()]}fn {match[1]}(game: &mut crate::game::Game<'_>, command: &str) -> {RAN_FLOW_RETURN} {{\n"
+        "    let mut handled = false;\n"
+        "    let ran = &mut handled;\n"
+        "    (|| {"
+        f"{body[match.end():-1]}"
+        "})();\n"
+        "    if handled {\n"
+        "        core::ops::ControlFlow::Break(Some(ClientCommandOutcome::Success(1)))\n"
+        "    } else {\n"
+        "        core::ops::ControlFlow::Continue(())\n"
+        "    }\n"
+        "}\n"
+    )
+
+
+HUD_HELPER_SIGNATURE = re.compile(
+    r"fn (\w+)\(\s*game: &mut crate::game::Game<'_>,\s*batch: (&mut [\w:]+HudBatch),\s*corners: (&mut [\w:]+Corners),?\s*\) \{")
+
+
+def after_call_helper(source, call):
+    """A shared `(game, batch, corners)` HUD helper as one that hooks the head of `call` (a Game method
+    taking `batch` and `corners`) but runs after it: the helper calls the original itself, once (the
+    nested call sees the guard and goes on to the original body), then draws and cancels the outer call."""
+    match = HUD_HELPER_SIGNATURE.search(source)
+    body = source.rstrip()
+    if match is None or not body.endswith("}"):
+        return None
+    return (
+        f"{source[:match.start()]}fn {match[1]}(game: &mut crate::game::Game<'_>, batch: {match[2]}, corners: {match[3]}) "
+        "-> core::ops::ControlFlow<()> {\n"
+        "    thread_local! {\n"
+        "        static INSIDE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };\n"
+        "    }\n"
+        "    if INSIDE.get() {\n"
+        "        return core::ops::ControlFlow::Continue(());\n"
+        "    }\n"
+        "    INSIDE.set(true);\n"
+        f"    game.{call}(batch, corners);\n"
+        "    INSIDE.set(false);\n"
+        "    (|| {"
+        f"{body[match.end():-1]}"
+        "})();\n"
+        "    core::ops::ControlFlow::Break(())\n"
+        "}\n"
+    )
+
+
 def derive_mouse_helpers(out, rules):
-    """Write each `helper_from` rule's helper: the shared key helper fed from a GLFW button index."""
+    """Write each `helper_from` rule's helper: the shared key helper fed from a GLFW button index, with
+    `ran_flow` the shared command helper that cancels its target when it ran the line, or with
+    `after_call` the shared HUD helper that runs after the named call."""
     for key, rule in rules.items():
         if "helper_from" not in rule or rule.get("drop"):
             continue
         source = (out / rule["helper_from"]).read_text(encoding="utf-8")
-        text, count = KEY_HELPER_SIGNATURE.subn(
-            lambda m: f"fn {m[1]}_mouse(game: &mut crate::game::Game<'_>, button: i32, pressed: bool) {{{MOUSE_KEY_PRELUDE}",
-            source)
-        if count != 1:
-            raise SystemExit(f"platform injection {key}: {rule['helper_from']} has no (game, key, action) helper to derive from")
+        if rule.get("after_call"):
+            text = after_call_helper(source, rule["after_call"])
+            if text is None:
+                raise SystemExit(f"platform injection {key}: {rule['helper_from']} has no (game, batch, corners) helper to derive from")
+        elif rule.get("ran_flow"):
+            text = ran_flow_helper(source)
+            if text is None:
+                raise SystemExit(f"platform injection {key}: {rule['helper_from']} has no (game, command, ran) helper to derive from")
+        else:
+            text, count = KEY_HELPER_SIGNATURE.subn(
+                lambda m: f"fn {m[1]}_mouse(game: &mut crate::game::Game<'_>, button: i32, pressed: bool) {{{MOUSE_KEY_PRELUDE}",
+                source)
+            if count != 1:
+                raise SystemExit(f"platform injection {key}: {rule['helper_from']} has no (game, key, action) helper to derive from")
         target = out / rule["helper"]
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
@@ -339,7 +410,7 @@ def command_generate(args):
                 if best is None:
                     raise SystemExit(f"injection {injection['id']}: no unique Sunrise target; add it to platform.toml")
                 entry["target"] = "::".join([best[0], *best[1], *([best[2]] if best[2] else []), function])
-        for key in ("kind", "helper", "bindings", "cancellable", "selector", "require", "ordinal", "priority"):
+        for key in ("kind", "helper", "bindings", "cancellable", "selector", "result", "require", "ordinal", "priority"):
             if key in rule:
                 entry[key] = rule[key]
         for old, new in rule.get("params", {}).items():
