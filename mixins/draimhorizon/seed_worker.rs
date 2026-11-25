@@ -5,7 +5,7 @@ use horizon_world::{
     registry::BlockRegistry,
     worldgen::{
         generator::{GeneratorData, GeneratorWorker, OverworldGenerator},
-        structure::start::{Rings, StructureRegistry},
+        structure::start::StructureRegistry,
     },
 };
 use std::{
@@ -323,7 +323,6 @@ impl Engine {
         let view = model::tile_view(tile);
         let worker = &mut self.workers[i];
         let mut candidates = BTreeSet::new();
-        let rings = Rings::new();
         let in_view = |x: i32, z: i32| {
             let side = model::SEARCH_TILE_BLOCKS / 16;
             x.div_euclid(side) == tile.0 && z.div_euclid(side) == tile.1
@@ -341,28 +340,32 @@ impl Engine {
             if let Some(spacing) = set.spacing() {
                 let (lo, hi) = model::region_bounds(view, 1.0, spacing)
                     .ok_or("invalid structure-search tile")?;
-                for rz in lo[1]..=hi[1] {
+                // Dev bdad86d made the placement maths private to the world crate, so the sets'
+                // chunks are asked for through `locate`, the public search that walks the same
+                // regions: from the middle region, each call answers the nearest start not seen
+                // yet, and a start outside the tile counts as seen, so the walk ends when the
+                // tile's regions are used up.
+                let names = &self.members[&set.name];
+                let mid = [(lo[0] + hi[0]).div_euclid(2), (lo[1] + hi[1]).div_euclid(2)];
+                let radius = (hi[0] - mid[0])
+                    .max(mid[0] - lo[0])
+                    .max(hi[1] - mid[1])
+                    .max(mid[1] - lo[1])
+                    + 1;
+                let from = [mid[0] * spacing * 16, 0, mid[1] * spacing * 16];
+                loop {
                     if canceled() {
                         return Err("canceled".into());
                     }
-                    for rx in lo[0]..=hi[0] {
-                        let Some(at) = StructureRegistry::potential_chunk(
-                            set,
-                            model::SEED,
-                            rx * spacing,
-                            rz * spacing,
-                        ) else {
-                            continue;
-                        };
-                        if !in_view(at.x, at.z)
-                            || !self
-                                .sets
-                                .is_structure_chunk(set, model::SEED, at.x, at.z, &rings)
-                        {
-                            continue;
-                        }
-                        candidates.insert((at.x, at.z));
-                    }
+                    let seen = candidates.clone();
+                    let skip = |_: &str, at: ChunkPos| {
+                        !in_view(at.x, at.z) || seen.contains(&(at.x, at.z))
+                    };
+                    let Some((_, found)) = worker.locate_skipping(names, from, radius, &skip)
+                    else {
+                        break;
+                    };
+                    candidates.insert((found[0] >> 4, found[2] >> 4));
                 }
             } else {
                 if canceled() {
