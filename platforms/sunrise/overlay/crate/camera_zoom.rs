@@ -1,18 +1,14 @@
 //! Camera zoom on the typed API: while the `zoom` key is held in play, the view zooms by the
 //! chosen factor, and the mouse wheel steps through the factors instead of the hotbar.
-use mod_api::{ClientHost, LivingRef, ModKeyMappingRef, Zoom};
+use mod_api::{ClientHost, LivingRef, ModKeyMappingRef};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The mod's `sunrise-mod.toml` id.
 const ID: &str = "draimhorizon";
 pub const DEFAULT_KEY: &str = "key.keyboard.z";
 const FACTORS: [f32; 8] = [2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0];
 static LEVEL: AtomicUsize = AtomicUsize::new(3);
-/// Whether this mod's zoom is the one in effect: set when the game last asked this mod for the
-/// zoom, cleared at the start of each frame. The `zoom` hook stops at the first mod that answers,
-/// so a frame in which another mod's zoom wins never asks this one.
-static SUPPLIED: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     /// The `zoom` mapping's handle, resolved again when a new registry generation refuses it.
@@ -53,31 +49,52 @@ fn held(host: &dyn ClientHost) -> bool {
         && key_down(host)
 }
 
-pub fn zoom(host: &dyn ClientHost) -> Option<Zoom> {
-    let zoom = held(host).then(|| {
-        let factor = FACTORS[LEVEL.load(Ordering::Relaxed)];
-        Zoom {
-            factor,
-            smooth: true,
-            turn: factor.recip(),
-        }
-    });
-    SUPPLIED.store(zoom.is_some(), Ordering::Relaxed);
-    zoom
+/// The camera player looks through a spyglass in first person (`AbstractClientPlayer.isScoping`):
+/// the game then fixes the modifier and skips `compute_fov_modifier`.
+fn scoping(host: &dyn ClientHost) -> bool {
+    let Some(spyglass) = mod_api::Identifier::parse("minecraft:spyglass")
+        .ok()
+        .and_then(|id| host.item_key(&id))
+    else {
+        return false;
+    };
+    host.camera_type().is_first_person()
+        && host.local_item_use().is_some_and(|using| {
+            local_living(host).is_some_and(|living| {
+                living
+                    .with_hand_item(host, using.hand, |stack| stack.item() == spyglass)
+                    .unwrap_or(false)
+            })
+        })
 }
 
-/// The start of a frame (`render_frame_pre`): the game asks for this frame's zoom after it, when
-/// it draws the view.
-pub fn frame_started() {
-    SUPPLIED.store(false, Ordering::Relaxed);
+/// The zoom of this frame's view as a divisor of the field-of-view modifier, or none: the key held
+/// and nothing over the world. The game asks no `compute_fov_modifier` listener while the camera
+/// player looks through a spyglass, so the mod's zoom never stacks on the scope.
+pub fn factor(host: &dyn ClientHost) -> Option<f32> {
+    (held(host) && !scoping(host)).then(|| FACTORS[LEVEL.load(Ordering::Relaxed)])
+}
+
+/// Vanilla's camera eases to the modifier this leaves, as it did for the old smooth zoom.
+pub fn compute_fov_modifier(host: &dyn ClientHost, modifier: &mut f32) {
+    if let Some(factor) = factor(host) {
+        *modifier /= factor;
+    }
+}
+
+/// Mouse, stick and key turning slows by the same factor while zoomed.
+pub fn player_turn(host: &dyn ClientHost, x: &mut f64, y: &mut f64) {
+    if let Some(factor) = factor(host) {
+        let scale = f64::from(factor.recip());
+        *x *= scale;
+        *y *= scale;
+    }
 }
 
 /// Steps the factor by the wheel's whole steps; true when the wheel was used for zoom.
-/// Only while this mod's zoom is the one shown in the last frame: when another mod's zoom wins,
-/// or while looking through a spyglass (the game asks no mod for a zoom then), the wheel stays
-/// the hotbar's.
+/// Only while the zoom is in effect: while looking through a spyglass the wheel stays the hotbar's.
 pub fn scroll(host: &dyn ClientHost, steps: i32) -> bool {
-    if !SUPPLIED.load(Ordering::Relaxed) || !held(host) {
+    if !held(host) || scoping(host) {
         return false;
     }
     let level = LEVEL.load(Ordering::Relaxed);

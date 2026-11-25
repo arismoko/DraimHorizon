@@ -26,8 +26,16 @@ bindings = [
 
 [injection.menu-render]
 params = { batch = "draw" }
+# Since Dev bdad86d the item decoration hook draws on a typed canvas, not the HUD batch.
 [injection.inventory-search-highlight]
-params = { batch = "draw" }
+helper = "sunrise/inventory_search_hook.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "stack", ty = "&sunrise_client::items::ItemStack", value = "stack" },
+  { name = "x", ty = "f32", value = "x" },
+  { name = "y", ty = "f32", value = "y" },
+  { name = "draw", ty = "&mut dyn mod_api::GuiCanvas", value = "&mut *draw" },
+]
 # Horizon's signed_chat_line is three places in Sunrise: add_chat_line (system and client lines),
 # a player's line once chat_received has let it through, and the validation error line
 # show_queued_chat shows. A captured line is not recorded, and a player's or error line is not
@@ -304,8 +312,35 @@ bindings = [
 ]
 
 # Replaceable functions live in sunrise_client_lib (files under crates/sunrise-client/src that are not game/).
+# The engine has no `native_chat`: the platform shim's own `native_chat` records the line instead.
 [injection.chat-local]
-target = "sunrise_client::game::native_hooks::system_helpers::Game<'_>::native_chat"
+drop = true
+reason = "the platform shim's native_chat captures the line (overlay/sunrise_platform.rs)"
+
+# Sunrise 26.3 removed Hooks::command: a typed client command line now reaches the mod through the
+# client dispatcher. The line still passes `run_client_native_command_in_chain` first, before the
+# server and the mod's own typed commands see it, so the Horizon helpers run there and cancel it with a
+# successful client command when they ran it (what setting `ran` meant).
+[injection.command]
+target = "sunrise_client::game::native_server::Game<'_>::run_client_native_command_in_chain"
+cancellable = true
+helper = "command_flow.rs"
+helper_from = "command.rs"
+ran_flow = true
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "command", ty = "&str", value = "line" },
+]
+[injection.bar-command]
+target = "sunrise_client::game::native_server::Game<'_>::run_client_native_command_in_chain"
+cancellable = true
+helper = "baritone/hooks/command_flow.rs"
+helper_from = "baritone/hooks/command.rs"
+ran_flow = true
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "command", ty = "&str", value = "line" },
+]
 [injection.bar-lines]
 target = "sunrise_client_lib::gizmos::camera_relative"
 
@@ -515,14 +550,15 @@ target = "sunrise_client::game::native_hooks::render_frame_pre::Game<'_>::native
 
 # Sunrise draws the HUD from `&self` hooks; the mod needs `&mut Game`. Since Dev f8aa80e the
 # HUD-post call sits in a body the tool can't patch (`matches!`), so the mod draws in the extras
-# pass instead, which gets the same batch and corners.
+# pass instead. Since Dev bdad86d the extras' `Corners` is a local of `draw_extras`, so the mod
+# hooks `draw_pvp_hud`, which takes it, and draws once that has: right after the PvP HUD and before
+# the registered layers, as before. (RETURN cannot cover its `?` exits.)
 [injection.social-hud]
-# Right after the PvP HUD and before the registered layers, as before.
-target = "sunrise_client::game::extras::Game<'_>::draw_extras"
-kind = "BEFORE_CALL"
-selector = "sunrise_hooks::hud::engine::all"
-require = 1
-ordinal = 0
+target = "sunrise_client::game::pvp::Game<'_>::draw_pvp_hud"
+cancellable = true
+helper = "hud_after_pvp_hook.rs"
+helper_from = "hud_hook.rs"
+after_call = "draw_pvp_hud"
 bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
   { name = "batch", ty = "&mut sunrise_client::hud::HudBatch", value = "&mut *batch" },
@@ -704,3 +740,18 @@ replace = '''fn baritone_tick(game: &mut crate::game::Game<'_>) {
         return;
     }'''
 files = ["baritone/hooks/tick.rs"]
+
+# The offer-list click's own function calls the game's macro-made `play_audio`, which a copied body
+# cannot reach, so the hook runs on its caller's call instead (a hit on the offer list).
+[injection.villager-trade-click]
+target = "sunrise_client::game::stations::Game<'_>::station_click"
+kind = "AFTER_CALL"
+selector = "self.merchant_click"
+require = 1
+ordinal = 0
+result = "bool"
+helper = "sunrise/villager_trade_hook.rs"
+bindings = [
+  { name = "value", ty = "&bool", value = "$result_ref" },
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]

@@ -1,0 +1,31 @@
+# Dev bdad86d moved the chat box's draft state into the screen itself and reworked the chat search
+# and signed input: the shared chat sources read the old fields, so Sunrise spells them the new way.
+
+# `PvpState::chat_search` is its aside text now: a search is on while a draft is put aside.
+[[rewrite]]
+pattern = '''\bgame\.pvp\.chat_search\b(?!_)'''
+replace = '''game.pvp.chat_search_aside.is_some()'''
+files = ["chat_view.rs"]
+
+# The chat screen owns whether its text is the saved draft (`ChatScreen::is_draft`), so putting the
+# very screen back restores it: there is no flag on `UiState` to carry.
+[[rewrite]]
+pattern = '''game\.ui\.chat_draft_shown = draft_shown;'''
+replace = '''let _ = draft_shown;'''
+files = ["outgoing_view.rs"]
+[[rewrite]]
+pattern = '''let draft_shown = game\.ui\.chat_draft_shown;'''
+replace = '''let draft_shown = false;'''
+files = ["outgoing_view.rs"]
+
+# `send_signed_chat` is `send_signed_chat_input`, which also reports a client command's outcome.
+[[rewrite]]
+pattern = '''game\.send_signed_chat\(&message\);'''
+replace = '''let _ = game.send_signed_chat_input(&message);'''
+files = ["outgoing_view.rs"]
+
+# `draw_item_model` takes the item-draw seed.
+[[rewrite]]
+pattern = '''game\.draw_item_model\(batch, &stack, x, y\);'''
+replace = '''game.draw_item_model(batch, &stack, x, y, 0);'''
+files = ["baritone/game/settings_ui.rs"]

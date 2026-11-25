@@ -1,10 +1,10 @@
 // Mod crate template: tools/sunrise.py smod appends `pub mod <name>;` for overlay/crate/*.rs.
 // Mod crate: runs in the game process. Game-side modules may call it as `mod_draimhorizon::...`.
 use mod_api::{
-    self, ClientHost, Hooks, HumanoidSetupAnimEvent, MouseScrollingEvent,
-    RegisterClientCommandsEvent, RegisterClientTooltipComponentFactoriesEvent, Registrar,
-    RegistrationContext, RenderFramePreEvent, RenderHandEvent, RenderTooltipGatherComponentsEvent,
-    RenderTooltipTextureEvent, ScreenCharTypedPreEvent, ScreenRenderPostEvent, Zoom, ZoomEvent,
+    self, ClientHost, ComputeFovModifierEvent, Hooks, HumanoidSetupAnimEvent, MouseScrollingEvent,
+    PlayerTurnEvent, RegisterClientCommandsEvent, RegisterClientTooltipComponentFactoriesEvent,
+    Registrar, RegistrationContext, RenderHandEvent, RenderTooltipGatherComponentsEvent,
+    RenderTooltipTextureEvent, ScreenCharTypedPreEvent, ScreenRenderPostEvent,
 };
 
 #[derive(Default)]
@@ -17,16 +17,17 @@ impl Hooks for Mod {
     }
     fn register_client_commands(
         &self,
-        _: &mut dyn ClientHost,
+        host: &mut dyn ClientHost,
         event: &mut RegisterClientCommandsEvent<'_>,
     ) {
-        mod_entry::commands(event.commands);
+        mod_entry::commands(&*host, event.commands);
     }
-    fn zoom(&self, host: &dyn ClientHost, _: &mut ZoomEvent) -> Option<Zoom> {
-        camera_zoom::zoom(host)
+    // The zoom divides the field-of-view modifier the camera eases to and slows the turning.
+    fn compute_fov_modifier(&self, host: &dyn ClientHost, event: &mut ComputeFovModifierEvent) {
+        camera_zoom::compute_fov_modifier(host, &mut event.modifier);
     }
-    fn render_frame_pre(&self, _: &mut dyn ClientHost, _: &mut RenderFramePreEvent) {
-        camera_zoom::frame_started();
+    fn player_turn(&self, host: &dyn ClientHost, event: &mut PlayerTurnEvent) {
+        camera_zoom::player_turn(host, &mut event.x, &mut event.y);
     }
     // The wheel steps the zoom factor while zoomed, in place of the hotbar.
     fn mouse_scrolling(

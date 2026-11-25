@@ -1,5 +1,7 @@
 //! Client command names, Controls rows and the settings button of Options > Mods.
-use mod_api::{Command, KeyRegistration, Registrar, SettingSpec};
+use mod_api::{
+    ClientCommandRegistration, ClientHost, Command, KeyRegistration, Registrar, SettingSpec,
+};
 
 /// One usage per client command, as `mod_api::Command` spells it. Every handler takes the words after
 /// the name itself, so each ends in optional text (`r` and `reply` take the whole line as the message);
@@ -122,6 +124,18 @@ pub fn register(registrar: &mut dyn Registrar) {
     ));
 }
 
-pub fn commands(out: &mut Vec<Command>) {
-    out.extend(USAGES.iter().map(|usage| Command::new(usage)));
+/// The usages the chat box completes and colours. The game's client dispatcher owns a registered name
+/// (its server branch never sees it), so a mod that is off registers none and the lines reach the
+/// server. The executor only answers a line the game-side command hook (`command` injection) left
+/// alone, which for these names is a malformed `dfarm`: the hook handles the others itself, before the
+/// dispatcher parses them.
+pub fn commands(host: &dyn ClientHost, out: &mut Vec<ClientCommandRegistration>) {
+    if !host.on("draimhorizon") {
+        return;
+    }
+    out.extend(
+        USAGES
+            .iter()
+            .map(|usage| Command::new(usage).executes_client(|_, _| None)),
+    );
 }

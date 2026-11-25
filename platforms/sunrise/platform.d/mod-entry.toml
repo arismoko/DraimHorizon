@@ -14,14 +14,18 @@ reason = "the Options > Mods row comes from sunrise-mod.toml; key rows from Hook
 drop = true
 reason = "the settings button is the open_menu toggle registered in overlay/crate/mod_entry.rs"
 
+# The settings button is a toggle. Since Dev bdad86d `native_setting_changed` takes `&self`, so the hook
+# sits on the write path instead (`apply_native_setting_write`, shared by Options > Mods and typed
+# writes): a press is answered there and never stored, so the toggle stays off.
 [injection.menu-options-click]
 drop = false
-target = "sunrise_client::game::native_hooks::base::Game<'_>::native_setting_changed"
+target = "sunrise_client::game::native_hooks::mod_settings::Game<'_>::apply_native_setting_write"
 kind = "HEAD"
 cancellable = true
 helper = "mod_entry/settings_toggle_hook.rs"
 bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
-  { name = "mod_id", ty = "&str", value = "mod_id" },
-  { name = "key", ty = "&str", value = "key" },
+  { name = "owner", ty = "&'static str", value = "owner" },
+  { name = "spec", ty = "&'static SettingSpec", value = "spec" },
+  { name = "value", ty = "SettingValue", value = "value" },
 ]

@@ -6,7 +6,6 @@ use super::Game;
 
 // Horizon's Native* records are Sunrise's mod_api records (the minimap one has no counterpart since
 // Nightly ed3ac19 removed the engine minimap).
-pub type NativeZoom = mod_api::Zoom;
 pub type NativeScreenView<'a> = mod_api::ScreenView<'a>;
 
 /// A native mod as the shared sources describe it: id, title, description and its keys
@@ -42,6 +41,19 @@ impl std::ops::DerefMut for SlotToast {
     }
 }
 
+/// The player as the shared sources read it (Horizon's `NativePlayer`): where they stand and look.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativePlayer {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    /// Degrees; 0 faces south, 90 west.
+    pub yaw: f32,
+    pub pitch: f32,
+    /// `minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`.
+    pub dimension: &'static str,
+}
+
 /// Horizon's `Game::native_*` host calls, implemented on Sunrise's `Game`. An extension trait
 /// because a Sunrise native mod's modules cannot add inherent methods to the game's types.
 pub(crate) trait SunriseGame {
@@ -51,6 +63,14 @@ pub(crate) trait SunriseGame {
     fn native_setting(&self, mod_id: &str, key: &str) -> Option<String>;
     fn native_set_setting(&self, mod_id: &str, key: &str, value: &str);
     fn native_playing(&self) -> bool;
+    /// The player, in a world. (Dev bdad86d dropped the engine's own `native_player`.)
+    fn native_player(&self) -> Option<NativePlayer>;
+    /// A native mod's own folder, `sunrise-mods/.sunrise-mod-data/<id>/`; not created here.
+    /// (Dev bdad86d dropped the engine's own `native_data_dir`.)
+    fn native_data_dir(&self, mod_id: &str) -> std::path::PathBuf;
+    /// The game's `config/` folder beside `options.txt`, made when missing. (Dev bdad86d lends
+    /// the folder through `Game::config_dir`, which needs a game: the shared startup code has none.)
+    fn native_config_dir() -> std::io::Result<std::path::PathBuf>;
     fn native_cursor(&self) -> [f32; 2];
     fn native_sneaking(&self) -> bool;
     fn native_mod_screen(&self) -> Option<&str>;
@@ -63,6 +83,8 @@ pub(crate) trait SunriseGame {
     fn native_block_property(&self, pos: [i32; 3], key: &str) -> Option<String>;
     fn native_client_action_bar(&mut self, text: crate::text::Text, tint: bool);
     fn native_send_chat(&mut self, message: &str) -> Result<(), String>;
+    /// A line in chat from the client, after the mod's own chat capture sees it.
+    fn native_chat(&mut self, text: &str);
     fn sunrise_text_width(&self, text: &str) -> f32;
     /// Horizon's `game.left` / `game.right`: whether the attack (`right == false`) or use button is
     /// held, which Sunrise keeps as the `key.attack` / `key.use` mapping's `isDown`.
@@ -115,6 +137,25 @@ impl SunriseGame for Game<'_> {
     fn native_playing(&self) -> bool {
         self.playing()
     }
+    fn native_player(&self) -> Option<NativePlayer> {
+        let p = self.player.as_ref()?;
+        Some(NativePlayer {
+            x: p.position.x,
+            y: p.position.y,
+            z: p.position.z,
+            yaw: self.yaw,
+            pitch: self.pitch,
+            dimension: self.dim.id(),
+        })
+    }
+    fn native_data_dir(&self, mod_id: &str) -> std::path::PathBuf {
+        Self::mod_data_root().join(mod_id)
+    }
+    fn native_config_dir() -> std::io::Result<std::path::PathBuf> {
+        let dir = std::env::current_dir()?.join("config");
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
     fn native_cursor(&self) -> [f32; 2] {
         self.cursor()
     }
@@ -160,6 +201,21 @@ impl SunriseGame for Game<'_> {
     }
     fn native_send_chat(&mut self, message: &str) -> Result<(), String> {
         self.send_chat(message)
+    }
+    fn native_chat(&mut self, text: &str) {
+        super::claim_borders_chat_view::capture_local(self, text);
+        let focused = self.screen == super::Screen::Chat;
+        let line = crate::text::Text::literal(text);
+        let ticks = self.visual_ticks();
+        let atlas = &self.gui.atlas;
+        self.ui.chat.add(
+            atlas,
+            line,
+            None,
+            sunrise_client::chat::ChatSource::Client,
+            ticks,
+            focused,
+        );
     }
     fn sunrise_text_width(&self, text: &str) -> f32 {
         crate::hud::HudBatch::text_width(&self.gui.atlas, text)
