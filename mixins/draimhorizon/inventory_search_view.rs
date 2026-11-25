@@ -91,22 +91,36 @@ pub(super) fn frame(game: &mut Game<'_>) {
         s.total = total;
     });
 }
-pub(super) fn decorate(game: &Game<'_>, stack: &ItemStack, x: f32, y: f32, batch: &mut HudBatch) {
+/// The frame of a matching item's slot at `(x, y)` as four rectangles, and its colour.
+pub(super) fn highlight(
+    game: &Game<'_>,
+    stack: &ItemStack,
+    x: f32,
+    y: f32,
+) -> Option<([[f32; 4]; 4], u32)> {
     if !eligible(game) {
-        return;
+        return None;
     }
     let query = state(|s| s.text.value.clone());
     if query.trim().is_empty() || !input::matches(&query, &name(game, stack)) {
-        return;
+        return None;
     }
     let color = 0xe9000000 | ui::preferences(game).accent.color();
-    for r in [
-        [x - 1., y - 1., 18., 1.],
-        [x - 1., y + 16., 18., 1.],
-        [x - 1., y, 1., 16.],
-        [x + 16., y, 1., 16.],
-    ] {
-        game.native_fill(batch, r, color);
+    Some((
+        [
+            [x - 1., y - 1., 18., 1.],
+            [x - 1., y + 16., 18., 1.],
+            [x - 1., y, 1., 16.],
+            [x + 16., y, 1., 16.],
+        ],
+        color,
+    ))
+}
+pub(super) fn decorate(game: &Game<'_>, stack: &ItemStack, x: f32, y: f32, batch: &mut HudBatch) {
+    if let Some((rects, color)) = highlight(game, stack, x, y) {
+        for r in rects {
+            game.native_fill(batch, r, color);
+        }
     }
 }
 pub(super) fn render(game: &Game<'_>, batch: &mut HudBatch, screen: &NativeScreenView<'_>) {
